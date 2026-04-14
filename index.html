@@ -113,6 +113,16 @@
         .api-status { font-size: 12px; padding: 4px 10px; border-radius: 12px; }
         .api-status.ok { background: #e8f5e9; color: #27ae60; }
         .api-status.warn { background: #fff3e0; color: #e67e22; }
+
+        /* OCR确认弹窗 */
+        .ocr-item { background: #f8f9fa; border-radius: 8px; padding: 16px; margin-bottom: 12px; border: 1px solid #eee; }
+        .ocr-item .form-row { margin-bottom: 8px; }
+        .ocr-item .form-group input { font-size: 13px; padding: 6px 10px; }
+        .ocr-item .form-group label { font-size: 12px; }
+        .ocr-item-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .ocr-item-header span { font-size: 13px; color: #666; font-weight: 600; }
+        .ocr-remove { background: none; border: none; color: #ccc; cursor: pointer; font-size: 18px; }
+        .ocr-remove:hover { color: #e74c3c; }
     </style>
 </head>
 <body>
@@ -224,6 +234,21 @@
             <button class="btn btn-outline" onclick="closeModal()">取消</button>
             <button class="btn btn-primary" onclick="doPrint()">打印</button>
             <button class="btn btn-success" onclick="confirmReimburse()">确认报账</button>
+        </div>
+    </div>
+</div>
+
+<!-- ========== OCR确认弹窗 ========== -->
+<div class="modal-overlay" id="modal-ocr">
+    <div class="modal" style="width:500px;">
+        <div class="modal-header">
+            <h3>识别结果确认</h3>
+            <button class="btn-del" onclick="closeOcrModal()" style="font-size:24px;">&times;</button>
+        </div>
+        <div class="modal-body" id="ocr-items" style="max-height:60vh; overflow-y:auto;"></div>
+        <div class="modal-footer">
+            <button class="btn btn-outline" onclick="closeOcrModal()">取消</button>
+            <button class="btn btn-success" onclick="saveOcrItems()">全部保存</button>
         </div>
     </div>
 </div>
@@ -671,38 +696,95 @@ async function handleReceiptUpload(e) {
         showToast('正在识别收据...', 'success');
         const items = await scanReceipt(file);
         if (!items || items.length === 0) { showToast('未能识别到有效信息', 'error'); return; }
-
-        if (items.length === 1) {
-            const item = items[0];
-            document.getElementById('inp-date').value = item.date || new Date().toISOString().slice(0,10);
-            document.getElementById('inp-summary').value = item.summary || '';
-            document.getElementById('inp-qty').value = item.quantity || 1;
-            document.getElementById('inp-unit').value = item.unit || '个';
-            document.getElementById('inp-amount').value = item.amount || '';
-            document.getElementById('inp-note').value = item.note || '';
-            showToast('已识别并填入表单，请检查后保存', 'success');
-        } else {
-            if (!confirm(`识别到 ${items.length} 条记录，是否全部保存？`)) return;
-            for (const item of items) {
-                await supaFetch('expenses', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        date: item.date || new Date().toISOString().slice(0,10),
-                        summary: item.summary || '未识别',
-                        quantity: item.quantity || 1,
-                        unit: item.unit || '个',
-                        amount: item.amount || 0,
-                        note: item.note || ''
-                    })
-                });
-            }
-            showToast(`已保存 ${items.length} 条记录`, 'success');
-        }
+        showOcrModal(items);
     } catch (err) {
         showToast('识别失败: ' + err.message, 'error');
         console.error('收据识别错误:', err);
     }
     e.target.value = '';
+}
+
+// 显示 OCR 确认弹窗
+function showOcrModal(items) {
+    const container = document.getElementById('ocr-items');
+    const today = new Date().toISOString().slice(0,10);
+
+    let html = '';
+    items.forEach((item, i) => {
+        html += `<div class="ocr-item" id="ocr-row-${i}">
+            <div class="ocr-item-header">
+                <span>第 ${i + 1} 条</span>
+                <button class="ocr-remove" onclick="document.getElementById('ocr-row-${i}').remove()" title="删除此条">✕</button>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="max-width:140px;">
+                    <label>日期</label>
+                    <input type="date" class="ocr-date" value="${item.date || today}">
+                </div>
+                <div class="form-group">
+                    <label>摘要</label>
+                    <input type="text" class="ocr-summary" value="${esc(item.summary || '')}">
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group" style="max-width:80px;">
+                    <label>数量</label>
+                    <input type="number" class="ocr-qty" value="${item.quantity || 1}" step="0.01">
+                </div>
+                <div class="form-group" style="max-width:80px;">
+                    <label>单位</label>
+                    <input type="text" class="ocr-unit" value="${esc(item.unit || '个')}">
+                </div>
+                <div class="form-group" style="max-width:120px;">
+                    <label>金额</label>
+                    <input type="number" class="ocr-amount" value="${item.amount || 0}" step="0.01">
+                </div>
+                <div class="form-group">
+                    <label>备注</label>
+                    <input type="text" class="ocr-note" value="${esc(item.note || '')}">
+                </div>
+            </div>
+        </div>`;
+    });
+
+    container.innerHTML = html;
+    document.getElementById('modal-ocr').classList.add('show');
+}
+
+function closeOcrModal() {
+    document.getElementById('modal-ocr').classList.remove('show');
+}
+
+// 保存 OCR 确认后的数据
+async function saveOcrItems() {
+    const rows = document.querySelectorAll('.ocr-item');
+    if (rows.length === 0) { showToast('没有可保存的条目', 'error'); return; }
+
+    let saved = 0;
+    for (const row of rows) {
+        const date = row.querySelector('.ocr-date').value;
+        const summary = row.querySelector('.ocr-summary').value.trim();
+        const quantity = parseFloat(row.querySelector('.ocr-qty').value) || 1;
+        const unit = row.querySelector('.ocr-unit').value.trim() || '个';
+        const amount = parseFloat(row.querySelector('.ocr-amount').value) || 0;
+        const note = row.querySelector('.ocr-note').value.trim();
+
+        if (!summary || amount <= 0) continue;
+
+        try {
+            await supaFetch('expenses', {
+                method: 'POST',
+                body: JSON.stringify({ date, summary, quantity, unit, amount, note })
+            });
+            saved++;
+        } catch (err) {
+            showToast('保存失败: ' + err.message, 'error');
+            return;
+        }
+    }
+
+    showToast(`已保存 ${saved} 条记录`, 'success');
+    closeOcrModal();
 }
 
 // MD5（百度翻译签名用）
