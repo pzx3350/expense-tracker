@@ -126,12 +126,18 @@
 
 <!-- ========== 记账页 ========== -->
 <div id="page-add" class="page active">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px; flex-wrap:wrap; gap:8px;">
         <h2>新增记录</h2>
-        <label class="btn btn-outline" style="cursor:pointer;">
-            拍照/上传收据
-            <input type="file" accept="image/*" capture="environment" onchange="handleReceiptUpload(event)" style="display:none;">
-        </label>
+        <div style="display:flex; align-items:center; gap:8px;">
+            <select id="ocr-engine" onchange="localStorage.setItem('ocr-engine',this.value)" style="padding:6px 10px; border:1px solid #ddd; border-radius:6px; font-size:13px;">
+                <option value="zhipu">智谱识别（推荐）</option>
+                <option value="gemini">Gemini识别</option>
+            </select>
+            <label class="btn btn-outline" style="cursor:pointer;">
+                拍照/上传收据
+                <input type="file" accept="image/*" capture="environment" onchange="handleReceiptUpload(event)" style="display:none;">
+            </label>
+        </div>
     </div>
     <div class="form-card">
         <div class="form-row">
@@ -236,6 +242,9 @@ const BAIDU_KEY = 'ftlPL4MX38EKOWxiq9Pt';
 
 // Gemini API
 const GEMINI_KEY = 'AIzaSyBHgGezIHNrBhVFHyZQC5stYcFNNJX_zKg';
+
+// 智谱 API（GLM-4.6V-Flash 免费）
+const ZHIPU_KEY = '52bbe423830647c691c0141edf5681ed.ELSq7iot5yVCvCku';
 
 // 常用词映射表（中→韩），翻译API不可用时作为兜底
 const DICT = {
@@ -574,40 +583,24 @@ function compressImage(file, maxSize = 1024) {
     });
 }
 
-async function scanReceipt(file) {
-    // 压缩图片
-    const base64 = await compressImage(file);
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
-    const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{
-                parts: [
-                    { text: `分析这张收据/发票图片，提取以下信息并以JSON格式返回。如果有多个商品则返回数组。只输出JSON，不要其他文字。
+const OCR_PROMPT = `分析这张收据/发票图片，提取以下信息并以JSON格式返回。如果有多个商品则返回数组。只输出JSON，不要其他文字。
 格式：[{"date":"YYYY-MM-DD","summary":"商品名称","quantity":数量,"unit":"单位","amount":金额,"note":"备注"}]
-注意：date看不清就用 ${new Date().toISOString().slice(0,10)}；amount是该行的总金额（数量×单价）必须是数字；quantity默认1；unit默认"个"；note可以为空字符串` },
-                    { inlineData: { mimeType: 'image/jpeg', data: base64 } }
-                ]
-            }],
-            generationConfig: { temperature: 0, maxOutputTokens: 1000 }
-        })
-    });
+注意：date看不清就用 ${new Date().toISOString().slice(0,10)}；amount是该行的总金额（数量×单价）必须是数字；quantity默认1；unit默认"个"；note可以为空字符串`;
 
-    if (!res.ok) {
-        const errText = await res.text().catch(() => '');
-        throw new Error(`API请求失败(${res.status}): ${errText.slice(0, 100)}`);
+function getOcrEngine() {
+    return document.getElementById('ocr-engine')?.value || localStorage.getItem('ocr-engine') || 'zhipu';
+}
+
+async function scanReceipt(file) {
+    const base64 = await compressImage(file);
+    const engine = getOcrEngine();
+
+    let text;
+    if (engine === 'zhipu') {
+        text = await zhipuVision(base64);
+    } else {
+        text = await geminiVision(base64);
     }
-
-    const data = await res.json();
-
-    if (data.error) {
-        throw new Error(data.error.message || JSON.stringify(data.error));
-    }
-
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
-    if (!text) throw new Error('API返回为空');
 
     const jsonStr = text.replace(/```json?\s*/g, '').replace(/```/g, '').trim();
     try {
@@ -615,6 +608,60 @@ async function scanReceipt(file) {
     } catch {
         throw new Error('JSON解析失败: ' + jsonStr.slice(0, 100));
     }
+}
+
+// Gemini Vision
+async function geminiVision(base64) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            contents: [{ parts: [
+                { text: OCR_PROMPT },
+                { inlineData: { mimeType: 'image/jpeg', data: base64 } }
+            ]}],
+            generationConfig: { temperature: 0, maxOutputTokens: 1000 }
+        })
+    });
+    if (!res.ok) throw new Error(`Gemini请求失败(${res.status})`);
+    const data = await res.json();
+    if (data.error) throw new Error(data.error.message);
+    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+    if (!text) throw new Error('Gemini返回为空');
+    return text;
+}
+
+// 智谱 GLM-4.6V-Flash Vision（免费）
+async function zhipuVision(base64) {
+    const url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${ZHIPU_KEY}`
+        },
+        body: JSON.stringify({
+            model: 'glm-4v-flash',
+            messages: [{
+                role: 'user',
+                content: [
+                    { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${base64}` } },
+                    { type: 'text', text: OCR_PROMPT }
+                ]
+            }],
+            temperature: 0.1,
+            max_tokens: 1000
+        })
+    });
+    if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        throw new Error(`智谱请求失败(${res.status}): ${errText.slice(0, 100)}`);
+    }
+    const data = await res.json();
+    const text = data?.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error('智谱返回为空');
+    return text;
 }
 
 async function handleReceiptUpload(e) {
@@ -878,7 +925,9 @@ function esc(str) {
 
 // 初始化
 initDateInput();
-// 恢复翻译引擎选择
+// 恢复引擎选择
+const savedOcr = localStorage.getItem('ocr-engine');
+if (savedOcr) document.getElementById('ocr-engine').value = savedOcr;
 const savedEngine = localStorage.getItem('translate-engine');
 if (savedEngine) {
     const sel = document.getElementById('translate-engine');
