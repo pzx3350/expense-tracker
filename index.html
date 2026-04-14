@@ -204,7 +204,8 @@
     <div class="settings-bar">
         <label>翻译引擎：</label>
         <select id="translate-engine" onchange="saveEngine()">
-            <option value="gemini">Gemini AI（推荐）</option>
+            <option value="zhipu">智谱 AI（推荐）</option>
+            <option value="gemini">Gemini AI</option>
             <option value="baidu">百度翻译（需代理）</option>
             <option value="dict">仅词表（离线）</option>
         </select>
@@ -481,14 +482,14 @@ function getSelectedItems() {
 
 // ============ 翻译 ============
 function getEngine() {
-    return document.getElementById('translate-engine')?.value || localStorage.getItem('translate-engine') || 'gemini';
+    return document.getElementById('translate-engine')?.value || localStorage.getItem('translate-engine') || 'zhipu';
 }
 
 function saveEngine() {
     const engine = document.getElementById('translate-engine').value;
     localStorage.setItem('translate-engine', engine);
     const status = document.getElementById('api-status');
-    const labels = { baidu: '百度翻译就绪', gemini: 'Gemini就绪', dict: '仅离线词表' };
+    const labels = { zhipu: '智谱就绪', baidu: '百度翻译就绪', gemini: 'Gemini就绪', dict: '仅离线词表' };
     status.textContent = labels[engine];
     status.className = engine === 'dict' ? 'api-status warn' : 'api-status ok';
 }
@@ -500,10 +501,14 @@ function translateText(text) {
     if (engine === 'dict') return Promise.resolve(text + ' (*)');
     if (engine === 'baidu') return baiduTranslate(text).catch(() => text + ' (*)');
     if (engine === 'gemini') return geminiTranslate(text).catch(() => text + ' (*)');
+    if (engine === 'zhipu') return zhipuTranslate(text).catch(() => text + ' (*)');
     return Promise.resolve(text + ' (*)');
 }
 
-// 批量翻译（Gemini 一次请求翻译多条，减少 API 调用）
+// LLM 批量翻译通用 prompt
+const TRANSLATE_PROMPT = '将以下中文逐行翻译成韩文。严格按照原文顺序，每行对应一个翻译结果，只输出韩文，不要编号、不要解释：\n';
+
+// 批量翻译
 async function batchTranslate(texts) {
     const engine = getEngine();
     const results = {};
@@ -518,20 +523,39 @@ async function batchTranslate(texts) {
 
     if (needTranslate.length === 0) return results;
 
-    if (engine === 'gemini') {
+    if (engine === 'gemini' || engine === 'zhipu') {
         try {
-            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
-            const prompt = `将以下中文逐行翻译成韩文。严格按照原文顺序，每行对应一个翻译结果，只输出韩文，不要编号、不要解释：\n${needTranslate.join('\n')}`;
-            const res = await fetch(url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts: [{ text: prompt }] }],
-                    generationConfig: { temperature: 0, maxOutputTokens: 500 }
-                })
-            });
-            const data = await res.json();
-            const resultText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            const prompt = TRANSLATE_PROMPT + needTranslate.join('\n');
+            let resultText;
+
+            if (engine === 'gemini') {
+                const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_KEY}`;
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: prompt }] }],
+                        generationConfig: { temperature: 0, maxOutputTokens: 500 }
+                    })
+                });
+                const data = await res.json();
+                resultText = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+            } else {
+                // 智谱
+                const url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ZHIPU_KEY}` },
+                    body: JSON.stringify({
+                        model: 'glm-4-flash',
+                        messages: [{ role: 'user', content: prompt }],
+                        temperature: 0.1, max_tokens: 500
+                    })
+                });
+                const data = await res.json();
+                resultText = data?.choices?.[0]?.message?.content?.trim();
+            }
+
             if (resultText) {
                 const lines = resultText.split('\n').map(l => l.trim()).filter(l => l);
                 needTranslate.forEach((t, i) => { results[t] = lines[i] || t + ' (*)'; });
@@ -547,6 +571,24 @@ async function batchTranslate(texts) {
         }));
     }
     return results;
+}
+
+// 智谱翻译（单条）
+async function zhipuTranslate(text) {
+    const url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions';
+    const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${ZHIPU_KEY}` },
+        body: JSON.stringify({
+            model: 'glm-4-flash',
+            messages: [{ role: 'user', content: `将以下中文翻译成韩文，只输出韩文译文，不要任何解释：\n${text}` }],
+            temperature: 0.1, max_tokens: 100
+        })
+    });
+    const data = await res.json();
+    const result = data?.choices?.[0]?.message?.content?.trim();
+    if (!result) throw new Error('智谱翻译失败');
+    return result;
 }
 
 // 百度翻译（浏览器端有 CORS 限制，可能需要代理）
