@@ -82,7 +82,11 @@
         .modal-overlay.show { display: flex; }
         .modal { background: #fff; border-radius: 8px; width: 210mm; max-width: 95%; padding: 0; }
         .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 24px; border-bottom: 1px solid #eee; }
-        .modal-body { padding: 24px; }
+        .modal-body { padding: 24px; overflow-x: auto; }
+        /* 移动端：预览区按 A4 实际比例渲染，允许横向滚动（仅屏幕，不影响打印） */
+        @media screen and (max-width: 800px) {
+            .modal-body .print-area { width: 760px; }
+        }
         .modal-footer { display: flex; justify-content: flex-end; gap: 12px; padding: 16px 24px; border-top: 1px solid #eee; }
 
         /* A4 打印区域 */
@@ -99,8 +103,9 @@
         @media print {
             body * { visibility: hidden; }
             .print-area, .print-area * { visibility: visible; }
-            .print-area { position: absolute; left: 0; top: 0; width: 100%; padding: 20mm; box-sizing: border-box; }
-            .print-area table { font-size: 14px; }
+            /* 强制占满 A4 内容区，!important 覆盖屏幕端的宽度设定 */
+            .print-area { position: absolute !important; left: 0 !important; top: 0 !important; width: 210mm !important; padding: 15mm !important; box-sizing: border-box !important; background: #fff !important; }
+            .print-area table { font-size: 13px; width: 100% !important; }
             @page { size: A4; margin: 0; }
         }
 
@@ -951,31 +956,41 @@ async function previewPrint() {
         const today = new Date().toISOString().slice(0, 10);
 
         let html = `<h2>${DICT['经费使用明细']}</h2>`;
-        html += `<table style="width:100%; border-collapse:collapse;">
+        // 固定列布局 + colgroup 指定列宽，保证 A4 宽度充分利用
+        const cellStyle = 'border:1px solid #333; padding:8px; word-break:break-word;';
+        html += `<table style="width:100%; border-collapse:collapse; table-layout:fixed;">
+            <colgroup>
+                <col style="width:14%;">
+                <col style="width:30%;">
+                <col style="width:8%;">
+                <col style="width:10%;">
+                <col style="width:16%;">
+                <col style="width:22%;">
+            </colgroup>
             <thead><tr>
-                <th style="border:1px solid #333; padding:8px; text-align:center;">${DICT['日期']}</th>
-                <th style="border:1px solid #333; padding:8px; text-align:center;">${DICT['摘要']}</th>
-                <th style="border:1px solid #333; padding:8px; text-align:center;">${DICT['数量']}</th>
-                <th style="border:1px solid #333; padding:8px; text-align:center;">${DICT['单位']}</th>
-                <th style="border:1px solid #333; padding:8px; text-align:center;">${DICT['金额']}</th>
-                <th style="border:1px solid #333; padding:8px; text-align:center;">${DICT['备注']}</th>
+                <th style="${cellStyle} text-align:center;">${DICT['日期']}</th>
+                <th style="${cellStyle} text-align:center;">${DICT['摘要']}</th>
+                <th style="${cellStyle} text-align:center;">${DICT['数量']}</th>
+                <th style="${cellStyle} text-align:center;">${DICT['单位']}</th>
+                <th style="${cellStyle} text-align:center;">${DICT['金额']}</th>
+                <th style="${cellStyle} text-align:center;">${DICT['备注']}</th>
             </tr></thead><tbody>`;
 
         translated.forEach(row => {
             html += `<tr>
-                <td style="border:1px solid #333; padding:8px; text-align:center;">${row.date}</td>
-                <td style="border:1px solid #333; padding:8px;">${esc(row.summary)}</td>
-                <td style="border:1px solid #333; padding:8px; text-align:center;">${row.quantity}</td>
-                <td style="border:1px solid #333; padding:8px; text-align:center;">${esc(row.unit)}</td>
-                <td style="border:1px solid #333; padding:8px; text-align:right;">¥${Number(row.amount).toFixed(2)}</td>
-                <td style="border:1px solid #333; padding:8px;">${esc(row.note)}</td>
+                <td style="${cellStyle} text-align:center;">${row.date}</td>
+                <td style="${cellStyle}">${esc(row.summary)}</td>
+                <td style="${cellStyle} text-align:center;">${row.quantity}</td>
+                <td style="${cellStyle} text-align:center;">${esc(row.unit)}</td>
+                <td style="${cellStyle} text-align:right;">¥${Number(row.amount).toFixed(2)}</td>
+                <td style="${cellStyle}">${esc(row.note)}</td>
             </tr>`;
         });
 
         html += `<tr class="total-row">
-            <td colspan="4" style="border:1px solid #333; padding:8px; text-align:right; font-weight:600;">${DICT['合计']}</td>
-            <td style="border:1px solid #333; padding:8px; text-align:right; font-weight:600;">¥${total.toFixed(2)}</td>
-            <td style="border:1px solid #333; padding:8px;"></td>
+            <td colspan="4" style="${cellStyle} text-align:right; font-weight:600;">${DICT['合计']}</td>
+            <td style="${cellStyle} text-align:right; font-weight:600;">¥${total.toFixed(2)}</td>
+            <td style="${cellStyle}"></td>
         </tr>`;
         html += '</tbody></table>';
 
